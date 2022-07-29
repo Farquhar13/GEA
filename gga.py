@@ -9,14 +9,17 @@
 
 # TODO keep a list of terminated optimization points.
 
+from pickletools import optimize
 import warnings
 import numpy as np
 from scipy.optimize import least_squares
+from sympy import N
 from zqml.qeo.generators import ContinuousVAEGenerator
 from zqml.qeo import QEOStandalone, QEOBooster
 from math import ceil
 import random
 from scipy.special import softmax
+import csv
 
 # ----------------> Example Objective Functions <----------------
 def levy(x: np.ndarray) -> float:
@@ -40,18 +43,17 @@ class GGA():
     """
     TODO add class attributes for "options" for optimizer and generator
     """
-    def __init__(self, objective_function, n_parameters, bounds=(-10, 10), geo=None):
+    def __init__(self, objective_function, n_parameters, bounds=(-10, 10), geo=None, optimizer=least_squares):
         self.objective_function = objective_function
         self.n_parameters = n_parameters
         self.bounds = bounds
-        self.optimizer = least_squares
+        self.optimizer = optimizer # Set to None for testing w/ only generative model
         self.generator = None # Either use a generator object or a GEO object
         self.geo = geo
-        self.n_initial_random_samples = 100
         self.epsilon = 1
-        self.epsilon_decay = 0.96
+        self.epsilon_decay = 0.9
         self.epsilon_min = 0.05
-        self.n_optimze_steps = 100
+        self.n_optimize_steps = 1e3
         self.n_samples_to_generate = 100
         self.n_selected_samples = 10
         self.batch_size = 32
@@ -94,11 +96,15 @@ class GGA():
         # One option would be to use the scipy minimize function, which can be 
         # passed a callback function that is called on every step.
 
+        if self.optimizer == None:
+            return starting_points, [self.objective_function(starting_point) for starting_point in starting_points] 
+
         samples = [] 
         costs = []
         for starting_point in starting_points:
             result = least_squares(objective_function, starting_point, bounds=bounds, 
-                                   ftol=1e-15, xtol=None, gtol=None, max_nfev=1e3) # max_nfev could potentially be set to None
+                                   ftol=1e-15, xtol=None, gtol=None, max_nfev=self.n_optimize_steps,
+                                   method="dogbox", diff_step=1) # max_nfev could potentially be set to None
             samples.append(result.x) 
             costs.append(result.cost)
         return samples, costs 
@@ -177,6 +183,7 @@ class GGA():
 
     def run(self):
         for i in range(self.n_steps):
+            print("Step", i)
             # ------------------> Generation <------------------
             print("Generation")
             # generate
@@ -226,8 +233,8 @@ if __name__ == "__main__":
     # print("final cost", result.cost)
 
     # ----------------> Define Objective Functions <----------------
-    n_params = 1
-    objective_function = quadratic
+    n_params = 10
+    objective_function = levy
     bounds = (-10, 10)
     # -------------------------------------------------------------
 
@@ -242,21 +249,27 @@ if __name__ == "__main__":
     # -------------------------------------------------------------
 
 
-    # ---------------> Test GGA run function :  <------------------
-    generator = ContinuousVAEGenerator(
-            sample_size=n_params,
-            encoder_widths=[50, 20],
-            latents=10,
-            decoder_widths=[20, 50, n_params],
-            random_seed=1234,
-        )
-    #print(generator.generate(1))
-    initial_bitstrings = np.random.rand(1, n_params)
-    #initial_bitstrings = GGA.generate_random_samples(1)
-    #print("initial_bitstring", initial_bitstrings)
-    geo = QEOStandalone(objective=quadratic, generator=generator, bitstrings=initial_bitstrings) 
-    gga = GGA(objective_function=quadratic, n_parameters=n_params, bounds=bounds, geo=geo) 
-    #gga.train()
-    gga.run()
-    # res = gga.generate()
-    # print(res)
+    n_trails = 10
+    best_costs = []
+    for _ in range(n_trails):
+        # ---------------> Test GGA run function :  <------------------
+        generator = ContinuousVAEGenerator(
+                sample_size=n_params,
+                encoder_widths=[50, 20],
+                latents=10,
+                decoder_widths=[20, 50, n_params],
+                random_seed=1234,
+            )
+        initial_bitstrings = np.random.rand(1, n_params)
+        geo = QEOStandalone(objective=objective_function, generator=generator, bitstrings=initial_bitstrings) 
+        gga = GGA(objective_function=objective_function, n_parameters=n_params, bounds=bounds, geo=geo, optimizer=least_squares) 
+        gga.run()
+        best_costs_trail = sorted(gga.costs)[:10]
+        best_costs.append(best_costs_trail)
+
+    save = True
+    if save == True:
+        with open('data/ega_new_opt.csv', mode='w') as f:
+            writer = csv.writer(f)
+            for costs in best_costs:
+                writer.writerow(costs)
